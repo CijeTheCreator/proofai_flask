@@ -1246,6 +1246,177 @@ def create_model():
     finally:
         db_session.close()
 
+
+@app.route('/api/files/content', methods=['GET'])
+def get_file_content():
+    """
+    Endpoint to retrieve file contents
+    Required query parameters:
+    - file_id: ID of the file to retrieve
+    - file_type: Type of file ('agent', 'dataset', or 'model')
+    """
+    try:
+        # Get parameters
+        file_id = request.args.get('file_id')
+        file_type = request.args.get('file_type')
+        
+        # Validate parameters
+        if not file_id:
+            return jsonify({'error': 'Missing required parameter: file_id'}), 400
+            
+        if not file_type or file_type not in ['agent', 'dataset', 'model']:
+            return jsonify({'error': 'Invalid or missing file_type. Must be one of: agent, dataset, model'}), 400
+        
+        # Create database session
+        db_session = SessionLocal()
+        
+        try:
+            # Query for the appropriate file based on file_type
+            file_record = None
+            
+            if file_type == 'agent':
+                file_record = db_session.query(AgentFile).filter(AgentFile.id == file_id).first()
+            elif file_type == 'dataset':
+                file_record = db_session.query(DatasetFile).filter(DatasetFile.id == file_id).first()
+            elif file_type == 'model':
+                file_record = db_session.query(ModelFile).filter(ModelFile.id == file_id).first()
+            
+            if not file_record:
+                return jsonify({'error': f'{file_type.capitalize()} file not found'}), 404
+            
+            # Check if file exists on disk
+            if not os.path.exists(file_record.filepath):
+                return jsonify({'error': 'File not found on server'}), 404
+            
+            # Read file content
+            try:
+                # Handle binary files differently from text files
+                mimetype = file_record.mimetype
+                is_text = mimetype.startswith('text/') or mimetype in [
+                    'application/json', 
+                    'application/javascript',
+                    'application/xml',
+                    'application/python',
+                    'application/x-python',
+                    'application/x-javascript'
+                ]
+                
+                if is_text:
+                    # Read as text
+                    with open(file_record.filepath, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    return jsonify({
+                        'success': True,
+                        'filename': file_record.filename,
+                        'file_id': file_id,
+                        'file_type': file_type,
+                        'mimetype': file_record.mimetype,
+                        'content': content,
+                        'encoding': 'utf-8'
+                    })
+                else:
+                    # For binary files, return base64 encoded content
+                    import base64
+                    with open(file_record.filepath, 'rb') as f:
+                        binary_content = f.read()
+                    
+                    encoded_content = base64.b64encode(binary_content).decode('ascii')
+                    
+                    return jsonify({
+                        'success': True,
+                        'filename': file_record.filename,
+                        'file_id': file_id,
+                        'file_type': file_type,
+                        'mimetype': file_record.mimetype,
+                        'content': encoded_content,
+                        'encoding': 'base64'
+                    })
+                    
+            except Exception as e:
+                error_msg = f"Error reading file: {str(e)}"
+                logger.error(error_msg)
+                return jsonify({'error': error_msg}), 500
+                
+        except Exception as e:
+            error_msg = f"Database error: {str(e)}"
+            logger.error(error_msg)
+            return jsonify({'error': error_msg}), 500
+            
+        finally:
+            db_session.close()
+            
+    except Exception as e:
+        error_msg = f"Error processing request: {str(e)}"
+        logger.error(error_msg)
+        return jsonify({'error': error_msg}), 500
+
+
+@app.route('/api/files/list', methods=['GET'])
+def list_files():
+    """
+    Endpoint to list files associated with an entity
+    Required query parameters:
+    - entity_id: ID of the entity (agent, dataset, or model)
+    - entity_type: Type of entity ('agent', 'dataset', or 'model')
+    """
+    try:
+        # Get parameters
+        entity_id = request.args.get('entity_id')
+        entity_type = request.args.get('entity_type')
+        
+        # Validate parameters
+        if not entity_id:
+            return jsonify({'error': 'Missing required parameter: entity_id'}), 400
+            
+        if not entity_type or entity_type not in ['agent', 'dataset', 'model']:
+            return jsonify({'error': 'Invalid or missing entity_type. Must be one of: agent, dataset, model'}), 400
+        
+        # Create database session
+        db_session = SessionLocal()
+        
+        try:
+            # Query for files based on entity_type
+            files = []
+            file_records = []
+            
+            if entity_type == 'agent':
+                file_records = db_session.query(AgentFile).filter(AgentFile.agentId == entity_id).all()
+            elif entity_type == 'dataset':
+                file_records = db_session.query(DatasetFile).filter(DatasetFile.datasetId == entity_id).all()
+            elif entity_type == 'model':
+                file_records = db_session.query(ModelFile).filter(ModelFile.modelId == entity_id).all()
+            
+            for file_record in file_records:
+                files.append({
+                    'id': file_record.id,
+                    'filename': file_record.filename,
+                    'filesize': file_record.filesize,
+                    'mimetype': file_record.mimetype,
+                    'created_at': file_record.createdAt.isoformat() if hasattr(file_record, 'createdAt') else None
+                })
+            
+            return jsonify({
+                'success': True,
+                'entity_id': entity_id,
+                'entity_type': entity_type,
+                'files': files,
+                'count': len(files)
+            })
+                
+        except Exception as e:
+            error_msg = f"Database error: {str(e)}"
+            logger.error(error_msg)
+            return jsonify({'error': error_msg}), 500
+            
+        finally:
+            db_session.close()
+            
+    except Exception as e:
+        error_msg = f"Error processing request: {str(e)}"
+        logger.error(error_msg)
+        return jsonify({'error': error_msg}), 500
+
 if __name__ == '__main__':
     # Ensure all directories exist
     os.makedirs(os.path.join(UPLOAD_FOLDER, 'agents'), exist_ok=True)
@@ -1254,3 +1425,4 @@ if __name__ == '__main__':
     os.makedirs(os.path.join(UPLOAD_FOLDER, 'temp'), exist_ok=True)
     
     app.run(debug=True, host='0.0.0.0')
+
